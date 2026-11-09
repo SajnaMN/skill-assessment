@@ -2,11 +2,26 @@ const { ApiError, sendAccountVerificationEmail } = require("../../utils");
 const { findAllStudents, findStudentDetail, findStudentToSetStatus, addOrUpdateStudent } = require("./students-repository");
 const { findUserById } = require("../../shared/repository");
 
+const STUDENT_ROLE_ID = 3;
+
+// Only students count: without the role check, /students/:id could read, disable or overwrite an admin/staff user.
 const checkStudentId = async (id) => {
-    const isStudentFound = await findUserById(id);
-    if (!isStudentFound) {
+    const user = await findUserById(id);
+    if (!user || user.role_id !== STUDENT_ROLE_ID) {
         throw new ApiError(404, "Student not found");
     }
+}
+
+// student_add_update reports failures as { status: false, message, description: SQLERRM }.
+const throwStudentSaveError = ({ message, description }) => {
+    if (message === "Email already exists" || description?.includes("users_email_key")) {
+        throw new ApiError(409, "Email already exists");
+    }
+    if (description?.includes("class_name_fkey") || description?.includes("section_name_fkey")) {
+        throw new ApiError(400, "Class or section does not exist");
+    }
+    console.error(description);
+    throw new ApiError(500, message);
 }
 
 const getAllStudents = async (payload) => {
@@ -32,27 +47,26 @@ const getStudentDetail = async (id) => {
 const addNewStudent = async (payload) => {
     const ADD_STUDENT_AND_EMAIL_SEND_SUCCESS = "Student added and verification email sent successfully.";
     const ADD_STUDENT_AND_BUT_EMAIL_SEND_FAIL = "Student added, but failed to send verification email.";
-    try {
-        const result = await addOrUpdateStudent(payload);
-        if (!result.status) {
-            throw new ApiError(500, result.message);
-        }
+    const result = await addOrUpdateStudent(payload);
+    if (!result.status) {
+        throwStudentSaveError(result);
+    }
 
-        try {
-            await sendAccountVerificationEmail({ userId: result.userId, userEmail: payload.email });
-            return { message: ADD_STUDENT_AND_EMAIL_SEND_SUCCESS };
-        } catch (error) {
-            return { message: ADD_STUDENT_AND_BUT_EMAIL_SEND_FAIL }
-        }
+    try {
+        await sendAccountVerificationEmail({ userId: result.userId, userEmail: payload.email });
+        return { message: ADD_STUDENT_AND_EMAIL_SEND_SUCCESS };
     } catch (error) {
-        throw new ApiError(500, "Unable to add student");
+        return { message: ADD_STUDENT_AND_BUT_EMAIL_SEND_FAIL }
     }
 }
 
 const updateStudent = async (payload) => {
+    // student_add_update inserts when the id is unknown, so check first or PUT would create a student.
+    await checkStudentId(payload.userId);
+
     const result = await addOrUpdateStudent(payload);
     if (!result.status) {
-        throw new ApiError(500, result.message);
+        throwStudentSaveError(result);
     }
 
     return { message: result.message };
